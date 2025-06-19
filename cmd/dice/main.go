@@ -47,6 +47,7 @@ func run() (err error) {
 	go func() {
 		srvErr <- srv.ListenAndServe()
 	}()
+	logger.Info("HTTP server is listening on :8080")
 
 	// 中断処理
 	select {
