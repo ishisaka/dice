@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"log"
 	"log/slog"
 	"net"
@@ -12,7 +11,9 @@ import (
 	"os/signal"
 	"time"
 
-	"github.com/samber/slog-multi"
+	"go.opentelemetry.io/contrib/bridges/otelslog"
+
+	slogmulti "github.com/samber/slog-multi"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
@@ -20,6 +21,7 @@ var logger *slog.Logger
 
 func main() {
 	logLevl := slog.LevelDebug
+	// Otelとローカルのコンソール両方にログを出力
 	logger = slog.New(
 		slogmulti.Fanout(
 			otelslog.NewHandler("dice"),
