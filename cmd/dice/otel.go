@@ -5,21 +5,22 @@ import (
 	"errors"
 	"time"
 
+	"go.opentelemetry.io/contrib/exporters/autoexport"
+	"go.opentelemetry.io/contrib/processors/minsev"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/stdout/stdoutlog"
-	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
-	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/resource"
 	"go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.32.0"
 )
 
-// setupOTelSDK は OpenTelemetry SDK を初期化し、クリーンアップ関数を返します。
-// ctx は初期化時のコンテキストを提供します。
-// クリーンアップ関数を呼び出してリソースを解放することができます。
-// 初期化中にエラーが発生した場合、そのエラーも返されます。
+// setupOTelSDK は OpenTelemetry SDK を初期化し、シャットダウン用のクリーンアップ関数を返します。
+// 渡されたコンテキストを使用してプロバイダーを設定し、エラー発生時は適切なクリーンアップを行います。
+// 初期化には、トレース、計装、ログの各プロバイダーが含まれます。また、関連するクリーンアップ関数を登録します。
+// シャットダウン関数は一度だけ実行され、実行中に発生した全てのエラーを結合して返します。
 func setupOTelSDK(ctx context.Context) (shutdown func(context.Context) error, err error) {
 	var shutdownFuncs []func(context.Context) error
 
@@ -48,7 +49,7 @@ func setupOTelSDK(ctx context.Context) (shutdown func(context.Context) error, er
 	otel.SetTextMapPropagator(prop)
 
 	// トレースプロバイダの作成
-	tracerProvider, err := newTracerProvider()
+	tracerProvider, err := newTracerProvider(ctx)
 	if err != nil {
 		handleErr(err)
 		return
@@ -58,7 +59,7 @@ func setupOTelSDK(ctx context.Context) (shutdown func(context.Context) error, er
 	otel.SetTracerProvider(tracerProvider)
 
 	// 計装プロバイダーの作成
-	meterProvider, err := newMeterProvider()
+	meterProvider, err := newMeterProvider(ctx)
 	if err != nil {
 		handleErr(err)
 		return
@@ -68,7 +69,7 @@ func setupOTelSDK(ctx context.Context) (shutdown func(context.Context) error, er
 	otel.SetMeterProvider(meterProvider)
 
 	// ログプロバイダーの作成
-	loggerProvider, err := newLoggerProvider()
+	loggerProvider, err := newLoggerProvider(ctx)
 	if err != nil {
 		handleErr(err)
 		return
@@ -80,8 +81,7 @@ func setupOTelSDK(ctx context.Context) (shutdown func(context.Context) error, er
 	return
 }
 
-// newPropagator は OpenTelemetry の TextMapPropagator を作成して返します。
-// TraceContext と Baggage を組み合わせたコンポジットプロパゲータを使用します。
+// newPropagator は新しい TextMapPropagator を作成して返します。Traces と Baggage のプロパゲーションをサポートします。
 func newPropagator() propagation.TextMapPropagator {
 	return propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
@@ -92,14 +92,14 @@ func newPropagator() propagation.TextMapPropagator {
 // newTracerProvider は新しい OpenTelemetry TracerProvider を作成して返します。
 // 標準出力エクスポーターとバッチ処理を使用します。
 // 初期化に失敗した場合はエラーを返します。
-func newTracerProvider() (*trace.TracerProvider, error) {
-	traceExporter, err := stdouttrace.New(
-		stdouttrace.WithPrettyPrint())
+func newTracerProvider(ctx context.Context) (*trace.TracerProvider, error) {
+	traceExporter, err := autoexport.NewSpanExporter(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	tracerProvider := trace.NewTracerProvider(
+		trace.WithResource(getResource()),
 		trace.WithBatcher(traceExporter,
 			// Default is 5s. Set to 1s for demonstrative purposes.
 			trace.WithBatchTimeout(time.Second)),
@@ -110,18 +110,17 @@ func newTracerProvider() (*trace.TracerProvider, error) {
 // newMeterProvider は、新しい OpenTelemetry 計装プロバイダーを作成して返します。
 // 標準出力エクスポーターを使用し、データ収集間隔は3秒に設定されます。
 // 初期化に失敗した場合はエラーを返します。
-func newMeterProvider() (*metric.MeterProvider, error) {
+func newMeterProvider(ctx context.Context) (*metric.MeterProvider, error) {
 	// 標準出力への出力を設定
-	metricExporter, err := stdoutmetric.New()
+	metricReader, err := autoexport.NewMetricReader(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	// 計装プロバイダーの作成
 	meterProvider := metric.NewMeterProvider(
-		metric.WithReader(metric.NewPeriodicReader(metricExporter,
-			// デフォルトは1秒です。デモ目的で3秒に設定しています。
-			metric.WithInterval(3*time.Second))),
+		metric.WithResource(getResource()),
+		metric.WithReader(metricReader),
 	)
 	return meterProvider, nil
 }
@@ -129,16 +128,37 @@ func newMeterProvider() (*metric.MeterProvider, error) {
 // newLoggerProvider は新しい OpenTelemetry ログプロバイダーを作成して返します。
 // 標準出力エクスポーターとバッチ処理を使用します。
 // 初期化に失敗した場合はエラーを返します。
-func newLoggerProvider() (*log.LoggerProvider, error) {
+func newLoggerProvider(ctx context.Context) (*log.LoggerProvider, error) {
 	// 標準出力への出力を設定
-	logExporter, err := stdoutlog.New()
+	logExporter, err := autoexport.NewLogExporter(ctx)
 	if err != nil {
 		return nil, err
 	}
 
+	// ログレベルをminsevで指定
+	// go.opentelemetry.io/contrib/processors/minsev
+	loglevel := minsev.SeverityDebug
+
 	// ログプロバイダーの作成
 	loggerProvider := log.NewLoggerProvider(
-		log.WithProcessor(log.NewBatchProcessor(logExporter)),
+		log.WithResource(getResource()),
+		log.WithProcessor(
+			minsev.NewLogProcessor(
+				log.NewBatchProcessor(logExporter),
+				loglevel,
+			),
+		),
 	)
 	return loggerProvider, nil
+}
+
+// getResource はリソース情報を生成し、サービス名、バージョン、インスタンスIDを含むリソースを返します。
+func getResource() *resource.Resource {
+	res := resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceNameKey.String("dice"),
+		semconv.ServiceVersionKey.String("1.0.0"),
+		semconv.ServiceInstanceIDKey.String("abcdef12345"),
+	)
+	return res
 }

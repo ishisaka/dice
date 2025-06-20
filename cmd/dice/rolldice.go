@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strconv"
 
-	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -19,7 +18,6 @@ const name = "go.opentelemetry.io/otel/example/dice"
 var (
 	tracer  = otel.Tracer(name)
 	meter   = otel.Meter(name)
-	logger  = otelslog.NewLogger(name)
 	rollCnt metric.Int64Counter
 )
 

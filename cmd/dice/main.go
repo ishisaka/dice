@@ -3,17 +3,29 @@ package main
 import (
 	"context"
 	"errors"
+	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"time"
 
+	"github.com/samber/slog-multi"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
+var logger *slog.Logger
+
 func main() {
+	logLevl := slog.LevelDebug
+	logger = slog.New(
+		slogmulti.Fanout(
+			otelslog.NewHandler("dice"),
+			slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: logLevl}),
+		),
+	)
 	if err := run(); err != nil {
 		log.Fatalln(err)
 	}
